@@ -31,6 +31,28 @@ Register dependencies arise when an instruction uses a result stored in a regist
 
 >Medium Priority: The number of threads per block should be a multiple of 32 threads, because this provides optimal computing efficiency and facilitates coalescing.
 
+When choosing the first execution configuration parameter-the number of blocks per grid, or grid size - the primary concern is keeping the entire GPU busy. **The number of blocks in a grid should be larger than the number of multiprocessors so that all multiprocessors have at least one block to execute.** Furthermore, there should be multiple active blocks per multiprocessor so that blocks that aren’t waiting for a `__syncthreads()` can keep the hardware busy. This recommendation is subject to resource availability; therefore, it should be determined in the context of the second execution parameter - the number of threads per block, or block size - as well as shared memory usage. To scale to future devices, the number of blocks per kernel launch should be in the thousands.
+
+A lower occupancy kernel will have more registers available per thread than a higher occupancy kernel, which may result in less register spilling to local memory; in particular, with a high degree of exposed instruction-level parallelism (ILP) it is, in some cases, possible to fully cover latency with a low occupancy.
+
+### 11.4 Effects of Shared Memory
+
+It may be desirable to use a 64x64 element shared memory array in a kernel, but because the maximum number of threads per block is 1024, it is not possible to launch a kernel with 64x64 threads per block. In such cases, kernels with 32x32 or 64x16 threads can be launched with each thread processing four elements of the shared memory array. The approach of using a single thread to process multiple elements of a shared memory array can be beneficial even if limits such as threads per block are not an issue. This is because some operations common to each element can be performed by the thread once, amortizing the cost over the number of shared memory elements processed by the thread.
+
+### 11.5 Concurrent Kernel Execution
+
+On devices that are capable of concurrent kernel execution, streams can also be used to execute multiple kernels simultaneously to more fully take advantage of the device’s multiprocessors. Whether a device has this capability is indicated by the `concurrentKernels` field of the `cudaDeviceProp`. Non-default streams (streams other than stream 0) are required for concurrent execution because kernel calls that use the default stream begin only after all preceding calls on the device (in any stream) have completed, and no operation on the device (in any stream) commences until they are finished.
+
+```C++
+cudaStreamCreate(&stream1);
+cudaStreamCreate(&stream2);
+kernel1<<<grid, block, 0, stream1>>>(data_1);
+kernel2<<<grid, block, 0, stream2>>>(data_2);
+// a capable device can execute the kernels at the same time
+```
+
+### 11.6 Multiple contexts
+
 
 
 

@@ -61,6 +61,5 @@ int main() {
 
     elementwise_kernel<<<blocks, threads>>>(/*input*/nullptr, /*output*/nullptr, N, ReLU());
     cudaDeviceSynchronize();
-
     
 }

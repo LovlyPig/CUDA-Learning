@@ -30,7 +30,7 @@ namespace cuda {
 
 namespace elementwise {
 
-constexpr int kBlockSize = 256;
+constexpr int kBlockSize = 256;           
 constexpr int kNumWaves = 32;
 
 inline cudaError_t GetNumBlocks(int64_t n, int* num_blocks) {
@@ -54,24 +54,31 @@ inline cudaError_t GetNumBlocks(int64_t n, int* num_blocks) {
   return cudaSuccess;
 }
 
+// std::aligned_storage<Len, Align> 生成一个 未初始化的 POD 类型，
+// 其大小为 Len 字节，对齐要求为 Align 字节
 template<typename T, int pack_size>
 struct GetPackType {
   using type = typename std::aligned_storage<pack_size * sizeof(T), pack_size * sizeof(T)>::type;
 };
 
+// 类型别名
+// PackType<T, pack_size> 表示上述对齐存储类型
 template<typename T, int pack_size>
 using PackType = typename GetPackType<T, pack_size>::type;
 
+// union使得storge和elem共享同一块内存
 template<typename T, int pack_size>
 union Pack {
+  // 确保PackType的大小确实等于sizeof(T) * pack_size
   static_assert(sizeof(PackType<T, pack_size>) == sizeof(T) * pack_size, "");
   __device__ Pack() {
     // do nothing
   }
-  PackType<T, pack_size> storage;
+  PackType<T, pack_size> storage; // 未初始化的原始内存块
   T elem[pack_size];
 };
 
+// 按指定对齐方式打包多个元素
 template<typename T, int pack_size>
 struct alignas(sizeof(T) * pack_size) Packed {
   __device__ Packed() {
@@ -82,8 +89,10 @@ struct alignas(sizeof(T) * pack_size) Packed {
   };
 };
 
-constexpr int kMaxPackBytes = 128 / 8;
-constexpr int kMaxPackSize = 8;
+// 16字节是 NVIDIA GPU 向量加载指令的常见位宽
+constexpr int kMaxPackBytes = 128 / 8; // 16字节 
+// CUDA 内置向量类型支持的最大元素个数 如 half8 等
+constexpr int kMaxPackSize = 8;  // 最大元素个数 8
 
 constexpr int Min(int a, int b) { return a < b ? a : b; }
 
@@ -92,11 +101,16 @@ constexpr int PackSize() {
   return Min(kMaxPackBytes / sizeof(T), kMaxPackSize);
 }
 
+// 递归变参模板
+// 对传入的所有类型分别计算各自的 PackSize，并返回最小值
+// 保证所有数组都能用相同的 pack_size 进行向量化访问
+// 提供编译期常量，用于模板参数（前面的打包类型的pack_size）
 template<typename T, typename U, typename... Args>
 constexpr int PackSize() {
   return Min(PackSize<T>(), PackSize<U, Args...>());
 }
 
+// SFINAE 类型特征，用于在编译期检测类型 T 是否拥有 Apply2 成员函数
 template<typename T>
 class HasApply2 {
   typedef char one;
@@ -109,10 +123,14 @@ class HasApply2 {
   template<typename C>
   static two test(...);
 
+  // 如果 T::Apply2 存在，则 test<T>(0) 会匹配第一个重载（返回 one，大小为 1 字节），
+  // 否则匹配第二个重载（返回 two，大小为 2 字节）。
+  // 最终 value 为 true 表示该 Functor 支持 Apply2。
  public:
   enum { value = sizeof(test<T>(0)) == sizeof(char) };
 };
 
+// 条件：HasApply2 == true 且 pack_size 为偶数
 template<int pack_size, typename FunctorT, typename R, typename... IN>
 __device__ typename std::enable_if<HasApply2<FunctorT>::value == true && pack_size % 2 == 0,
                                    Packed<R, pack_size>>::type
@@ -123,6 +141,9 @@ ApplyPack(const FunctorT& functor, const Packed<IN, pack_size>... in) {
   return ret;
 }
 
+// 通用逐元素处理
+// std::enable_if<B, T>：是一个类型模板，当 B 为 true 时，它内部有 type 成员，且 type 被定义为 T；
+// 当 B 为 false 时，type 不存在
 template<int pack_size, typename FunctorT, typename R, typename... IN>
 __device__ typename std::enable_if<HasApply2<FunctorT>::value == false || pack_size % 2 != 0,
                                    Packed<R, pack_size>>::type
@@ -146,6 +167,8 @@ __global__ void __launch_bounds__(kBlockSize)
   if (global_tid < n_tail) { tail_r[global_tid] = functor((tail_in[global_tid])...); }
 }
 
+// 将预先构造好的 functor 对象传递到内核，并在内核中重新获得它的副本。
+// 它的存在是为了解耦构造时机，避免跨设备拷贝的复杂性
 template<typename FunctorT>
 struct SimpleFactory {
   explicit SimpleFactory(FunctorT functor) : tpl(functor) {}
